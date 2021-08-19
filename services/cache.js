@@ -3,17 +3,28 @@ const redis = require("redis");
 const { promisify } = require("util");
 
 const client = redis.createClient();
-const getRedisAsync = promisify(client.get).bind(client);
+const getRedisAsync = promisify(client.hget).bind(client);
 
 const exec = mongoose.Query.prototype.exec;
 
+mongoose.Query.prototype.cache = function (options = {}) {
+  this.useCache = true;
+  this.hashKey = JSON.stringify(options.key || "");
+
+  return this;
+};
+
 mongoose.Query.prototype.exec = async function () {
+  if (!this.useCache) {
+    return exec.apply(this, arguments);
+  }
+
   const key = JSON.stringify({
     ...this.getQuery(),
     collection: this.mongooseCollection.name,
   });
 
-  const cacheValue = await getRedisAsync(key);
+  const cacheValue = await getRedisAsync(this.hashKey, key);
 
   if (cacheValue) {
     const doc = JSON.parse(cacheValue);
@@ -26,7 +37,12 @@ mongoose.Query.prototype.exec = async function () {
   }
 
   const result = await exec.apply(this, arguments);
-  console.log(result);
-  client.set(key, JSON.stringify(result));
+  client.hset(this.hashKey, key, JSON.stringify(result), "EX", 10);
   return result;
+};
+
+module.exports = {
+  clearHash(hashKey) {
+    client.del(JSON.stringify(hashKey));
+  },
 };
